@@ -1,0 +1,14 @@
+/* Stile per le carte selezionate (bordo oro) */
+.selected-card-apertura {
+    -fx-border-color: gold;
+    -fx-border-width: 3px;
+    -fx-border-radius: 5px;
+}
+
+/* Stile per le carte confermate (bordo verde) */
+.confirmed-card-apertura {
+    -fx-border-color: limegreen; /* Puoi scegliere una tonalità di verde che preferisci */
+    -fx-border-width: 3px;
+    -fx-border-radius: 5px;
+    -fx-opacity: 0.7; /* Rendi le carte leggermente più trasparenti per indicare che sono "usate" */
+}

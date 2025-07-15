@@ -1,0 +1,8 @@
+{
+    "liveServer.settings.donotShowInfoMsg": true,
+    "redhat.telemetry.enabled": true,
+    "java.project.referencedLibraries": [
+        "lib/javafx-sdk-24.0.1/lib/**/*.jar",
+        "src/assets/decks/bycicle"
+    ]
+}
