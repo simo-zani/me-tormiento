@@ -19,4 +19,17 @@ public class Mano {
     public boolean contiene(Carta carta) {
         return carte.contains(carta);
     }
+
+    /**
+     * Verifica se la mano contiene almeno una carta Joker.
+     * @return true se un Joker è presente, false altrimenti.
+     */
+    public boolean contieneJoker() {
+        for (Carta carta : carte) {
+            if (carta.isJoker()) {
+                return true; //trovato un Joker, non serve cercare oltre
+            }
+        }
+        return false;
+    }
 }

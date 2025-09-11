@@ -12,3 +12,148 @@
     -fx-border-radius: 5px;
     -fx-opacity: 0.7; /* Rendi le carte leggermente più trasparenti per indicare che sono "usate" */
 }
+
+/* Stile generale per tutti i pulsanti */
+.standard-button {
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-font-size: 14px;
+    -fx-padding: 10px 20px;
+    -fx-background-radius: 50px;
+    -fx-border-radius: 50px;
+    -fx-border-width: 2px;
+}
+
+/* Stile Hover per i pulsanti standard */
+.standard-button:hover {
+    -fx-background-color: #43A047; /* Verde leggermente più scuro all'hover */
+    -fx-cursor: hand; /* Cambia il cursore per indicare che è cliccabile */
+}
+
+/* Stile Pressed per i pulsanti standard */
+.standard-button:pressed {
+    -fx-background-color: #388E3C; /* Verde ancora più scuro quando premuto */
+}
+
+/* --- Stile Specifico per il Pulsante Esci (sovrascrive lo stile generale) --- */
+#esciButton {
+    -fx-background-color: red; /* Sfondo rosso */
+    -fx-border-color: darkred; /* Bordo rosso scuro */
+}
+
+/* Stile Hover per il pulsante Esci */
+#esciButton:hover {
+    -fx-background-color: darkred;
+}
+
+/* Stile Pressed per il pulsante Esci */
+#esciButton:pressed {
+    -fx-background-color: #8B0000;
+}
+
+#tavoloButton {
+    -fx-background-color: black;
+    -fx-border-color: #000000;
+}
+
+#tavoloButton:hover {
+    -fx-background-color: #222222;
+}
+
+#tavoloButton:pressed {
+    -fx-background-color: #161616;
+}
+
+#pescaButton {
+    -fx-background-color: #8A2BE2;
+    -fx-border-color: #6A1B9A;
+}
+
+#pescaButton:hover {
+    -fx-background-color: #7B1FA2;
+}
+
+#pescaButton:pressed {
+    -fx-background-color: #512DA8;
+}
+
+#scartaButton {
+    -fx-background-color: #8A2BE2;
+    -fx-border-color: #6A1B9A;
+}
+
+#scartaButton:hover {
+    -fx-background-color: #7B1FA2;
+}
+
+#scartaButton:pressed {
+    -fx-background-color: #512DA8;
+}
+
+#apriButton {
+    -fx-background-color: #FFD700;
+    -fx-text-fill: #333333;
+    -fx-border-color: #DAA520;
+}
+
+#apriButton:hover {
+    -fx-background-color: #FFCC00;
+}
+
+#apriButton:pressed {
+    -fx-background-color: #B8860B;
+}
+
+#attaccaButton {
+    -fx-background-color: #FFD700;
+    -fx-text-fill: #333333;
+    -fx-border-color: #DAA520;
+}
+
+#attaccaButton:hover {
+    -fx-background-color: #FFCC00;
+}
+
+#attaccaButton:pressed {
+    -fx-background-color: #B8860B;
+}
+
+#confirmButton {
+    -fx-background-color: #FFD700;
+    -fx-text-fill: #333333;
+    -fx-border-color: black;
+}
+
+#confirmButton:hover {
+    -fx-background-color: #FFCC00;
+}
+
+#confirmButton:pressed {
+    -fx-background-color: #B8860B;
+}
+
+#tormentoSiButton {
+    -fx-background-color: #026722;
+    -fx-border-color: #00511a;
+}
+
+#tormentoSiButton:hover {
+    -fx-background-color: #064219;
+}
+
+#tormentoSiButton:pressed {
+    -fx-background-color: #033211;
+}
+
+#tormentoNoButton {
+    -fx-background-color: #ab0101;
+    -fx-border-color: #880000;
+}
+
+#tormentoNoButton:hover {
+    -fx-background-color: #8d0909;
+}
+
+#tormentoNoButton:pressed {
+    -fx-background-color: #690303;
+}

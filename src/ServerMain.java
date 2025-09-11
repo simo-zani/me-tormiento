@@ -3,19 +3,29 @@
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList; // Usa CopyOnWriteArrayList per broadcast thread-safe
 
 public class ServerMain {
     private static final int PORT = 12345;
     private static final int MAX_PLAYERS = 4;
-    private static final List<ClientHandler> clients = new ArrayList<>();
-    private static final List<Carta> deck = new ArrayList<>();
+    // Usa CopyOnWriteArrayList per consentire iterazioni sicure durante le modifiche (es. disconnessioni)
+    private static final List<ClientHandler> clients = new CopyOnWriteArrayList<>(); 
+    //private static final List<ClientHandler> clients = new ArrayList<>();
+    private static final List<Carta> deck = new ArrayList<>();  //con deck.size() so quante carte ci sono nel mazzo in ogni istante
     private static final Map<Integer, List<Carta>> maniGiocatori = new HashMap<>();
     private static final Stack<Carta> pilaScarti = new Stack<>();
     private static int currentPlayerIndex = 0;
+    private static int giocatoreInAttesaPesca = -1;
+    private static int giocatoreInTormento = -1;
     private static int carteMano = 6; //al primo round
     private static int currentRound = 1;
     private static final Map<Integer, Integer> punteggiGiocatori = new HashMap<>(); //per tenere traccia dei punteggi cumulativi
     private static int giocatoriProntiPerNuovoRound = 0; //contatore per sapere quando tutti i client sono pronti
+    private static Timer tormentoTimer;
+    //mappa che associa l'ID del giocatore ai set che ha aperto; ogni set è una lista di carte (tris o scale)
+    private static final Map<Integer, List<List<Carta>>> apertureSulTavolo = new HashMap<>();
+    //mappa per i joker sul tavolo: playerId -> (indice_apertura -> lista di joker sostituiti in quell'apertura)
+    private static final Map<Integer, Map<Integer, List<Carta>>> jokerSulTavolo = new HashMap<>();
 
     public static void main(String[] args) throws IOException {
         System.out.println("[SERVER] Avviato su porta " + PORT);
@@ -32,6 +42,7 @@ public class ServerMain {
         }
     }
 
+    //genero un mazzo da 108 carte
     private static void generateDeck() {
         String[] semi = {"H", "D", "C", "S"}; //hearts (cuori), diamonds (quadri), clubs (fiori), spades (picche)
         String[] valori = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"};
@@ -47,13 +58,29 @@ public class ServerMain {
         Collections.shuffle(deck);
     }
 
+    //rigenero il mazzo dalla pila degli scarti una volta che le carte del mazzo esauriscono
+    private static void reGenerateDeck(){
+        
+        Carta cima = pilaScarti.get(pilaScarti.size() - 1); //mi salvo la carta in cima alla pila degli scarti
+        List<Carta> nuovoDeck = new ArrayList<>(pilaScarti.subList(0, pilaScarti.size() - 1)); //copio nel nuovo deck tutte le carti presenti nella pila dalla pos 0 alla pos ultima-1
+        Collections.shuffle(nuovoDeck);
+
+        deck.clear(); //in teoria è già vuoto se arrivo a chiamare questo metodo
+        deck.addAll(nuovoDeck);
+
+        pilaScarti.clear(); //svuoto la pila e ci rimetto dentro solo la cima
+        pilaScarti.add(cima);
+
+        broadcastMessage("CARTE_MAZZO:" + deck.size()); //invio nuovamente a TUTTI la dimensione del nuovo mazzo
+    }
+
     //alla prima mano vengono distribuite 6 carte
     private static synchronized List<Carta> drawHand() {
-        List<Carta> hand = new ArrayList<>();
+        List<Carta> mano = new ArrayList<>();
         for (int i = 0; i < carteMano; i++) {
-            hand.add(deck.remove(deck.size() - 1)); //rimuovo sempre quella in ultima posizione del deck (ovvero quella in cima al mazzo)
+            mano.add(deck.remove(deck.size() - 1)); //rimuovo sempre quella in ultima posizione del deck (ovvero quella in cima al mazzo) e la aggiungo alla mano
         }
-        return hand;
+        return mano;
     }
 
     static class ClientHandler implements Runnable {
@@ -82,6 +109,7 @@ public class ServerMain {
                 //invia carte iniziali
                 List<String> imagePaths = hand.stream().map(Carta::getImageFilename).toList();
                 out.println("CARTE_INIZIALI_ROUND_" + currentRound + ":" + String.join(",", imagePaths));
+                broadcastMessage("CARTE_MAZZO:" + deck.size()); //invio a TUTTI quante carte sono presenti nel mazzo
                 
                 if(playerId == 0){
                     System.out.println("Tocca a 'player " + playerId + "'");
@@ -98,26 +126,77 @@ public class ServerMain {
                 String line;
                 while ((line = in.readLine()) != null) {
                     System.out.println("[SERVER] Ricevuto: " + line);
+                    System.out.println("[CLIENT " + playerId + "] " + line);
 
                     if (line.startsWith("SCARTA:")) {
                         String cartaStr = line.substring(7).trim();
                         Carta cartaScartata = parseCartaFromString(cartaStr);
-                        maniGiocatori.get(clients.indexOf(this)).remove(cartaScartata); //rimuovo la carta scartata dalla mano del giocatore sul server
-
+                        maniGiocatori.get(playerId).remove(cartaScartata); //rimuovo la carta scartata dalla mano del giocatore sul server
+                        
                         synchronized (pilaScarti) {
                             pilaScarti.push(cartaScartata);
                         }
 
                         System.out.println("[SERVER] Player " + clients.indexOf(this) + " ha scartato " + cartaStr);
-                        ServerMain.passaAlProssimoGiocatore(); //passo il turno al giocatore successivo
+                        broadcastMessage("PILA_SCARTI:" + serializePilaScarti()); //invio a TUTTI la pila degli scarti
+                        broadcastMessage("CARTE_MAZZO:" + deck.size()); //invio a TUTTI quante carte sono presenti nel mazzo
 
+                        broadcastMessage("GIOCATORE_X_HA_SCARTATO_LA_CARTA_X:" + playerId + " ha scartato " + cartaScartata.getNomeCartaScartata_Ita()); //invio a TUTTI il giocatore X che ha scartato la carta X
+                        broadcastMessage("GIOCATORE_X_HA_IN_MANO_X_CARTE:" + maniGiocatori.get(playerId).size()); //invio a TUTTI quante carte ha in mano il giocatore X quando finisce il turno
+
+                        ServerMain.passaAlProssimoGiocatore(); //passo il turno al giocatore successivo
                     } else if (line.equals("PESCA_MAZZO")) {
-                        Carta pescata;
-                        synchronized (deck) {
-                            pescata = deck.remove(deck.size() - 1);
+                        /*
+                         * regola TORMENTO
+                         * quando il giocatore pesca dal mazzo, e quindi non gli serve la carta dalla pila degli scarti, prima di ricevere
+                         * la carta si intromette il server e manda un messaggio al giocatore successivo -> TORMENTO_CHANCE.
+                         * Il client avrà 10 secondi per rispondere e rimandare al server un messaggio -> TORMENTO_RISPOSTA:SI/NO
+                         * In entrambi i casi dopo che avverrà o meno il tormento il server autorizzerà la pescata dal mazzo
+                         * del giocatore originale con PESCA_MAZZO_AUTORIZZATA
+                         */
+                        int nextPlayerId = (currentPlayerIndex + 1) % MAX_PLAYERS;
+                        giocatoreInAttesaPesca = currentPlayerIndex; //mi salvo chi vuole pescare dal mazzo
+                        giocatoreInTormento = nextPlayerId;
+                        if(!pilaScarti.isEmpty()){
+                            sendMessageToNextPlayer("TORMENTO_CHANCE:" + pilaScarti.get(pilaScarti.size()-1).getImageFilename());
+                            
+                            //timer 10 secondi per la risposta
+                            tormentoTimer = new Timer();
+                            tormentoTimer.schedule(new TimerTask() {
+                                @Override
+                                public void run() {
+                                    ServerMain.gestisciTormento(giocatoreInTormento, false); //se il giocatore non risponde -> NO di default allo scadere
+                                    
+                                    clients.get(giocatoreInTormento).out.println("TIMER_SCADUTO");
+                                }
+                            }, 10000); //10 secondi in millisecondi
+                        } else{
+                            pescaCartaDalMazzo(giocatoreInAttesaPesca);
                         }
-                        maniGiocatori.get(playerId).add(pescata);
-                        out.println("PESCATA:" + pescata.getImageFilename());
+                    } else if (line.startsWith("TORMENTO_RISPOSTA:")) {
+                        /*
+                         * IN QUESTO BLOCCO 
+                         * currentPlayerIndex -> il giocatore che ha ricevuto la richiesta di tormento (è lui che manda la risposta)
+                         * giocatoreInAttesaPesca -> il giocatore che sta aspettando la risposta del tormento
+                         *
+                        */
+                        String risposta = line.substring("TORMENTO_RISPOSTA:".length()); //mi salvo il SI o il NO
+                        
+                        if (tormentoTimer != null) {
+                            tormentoTimer.cancel();
+                            tormentoTimer = null;
+                        }
+
+                        if (risposta.equalsIgnoreCase("SI")) {
+                            ServerMain.gestisciTormento(giocatoreInTormento, true);
+                        } else {
+                            ServerMain.gestisciTormento(giocatoreInTormento, false);
+                        }
+
+                        giocatoreInTormento = -1;
+
+                        //finito il tormento, chi era in attesa PESCA
+                        pescaCartaDalMazzo(giocatoreInAttesaPesca);
                         
                     } else if (line.equals("PESCA_SCARTO")) {
                         Carta pescata;
@@ -129,7 +208,8 @@ public class ServerMain {
                             pescata = pilaScarti.pop();
                         }
                         maniGiocatori.get(playerId).add(pescata);
-                        out.println("PESCATA:" + pescata.getImageFilename());
+                        out.println("PESCATA:" + pescata.getImageFilename()); //arriva al client che ha pescato
+                        broadcastMessage("PESCATA_DA_PILA_SCARTI:" + pescata.getImageFilename());  //invio a TUTTI la carta pescata dalla pila degli scarti
                     } else if (line.equals("ROUND_FINITO")){
                         // Il client notifica che ha terminato le carte
                         // Il server deve ora chiedere le mani rimanenti a tutti
@@ -144,6 +224,153 @@ public class ServerMain {
                              }
                         }
                         ServerMain.receiveRemainingCards(clients.indexOf(this), remaining);
+                    } else if (line.startsWith("APRI:")) { //il client invia le sue carte usate per l'apertura
+                        String carteString = line.substring(5).trim();
+                        String[] cardFilenames = carteString.split(",");
+                        
+                        //lista per conservare le carte dell'apertura
+                        List<Carta> carteAperte  = new ArrayList<>();
+                        for (String filename : cardFilenames) {
+                            Carta carta = parseCartaFromFileNameString(filename);
+                            if (carta != null) {
+                                carteAperte.add(carta);
+                            }
+                        }
+
+                        //rimuovo una carta alla volta al posto di usare removeAll (andrebbe a rimuovere carte uguali nella mano che invece non deve eliminare)
+                        List<Carta> manoCorrente = maniGiocatori.get(playerId);
+                        for(Carta cartaAperta : carteAperte) {
+                            manoCorrente.remove(cartaAperta);
+                        }
+
+                        //raggruppo le carte in set in base al round (2 tris, 1 tris e 1 scala, ecc.)
+                        List<List<Carta>> setsDelGiocatore = new ArrayList<>();
+                        
+                        if (currentRound == 1) {
+                            //il client invia 6 carte, le raggruppo in 2 tris da 3
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 6)));
+                        } else if (currentRound == 2) {
+                            //il client invia 7 carte, le raggruppo in 1 tris da 3 e 1 scala da 4
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 7)));
+                        } else if (currentRound == 3) {
+                            //il client invia 8 carte, le raggruppo in 2 scale da 4
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 4)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(4, 8)));
+                        } else if (currentRound == 4) {
+                            //il client invia 9 carte, le raggruppo in 3 tris da 3
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 6)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(6, 9)));
+                        } else if (currentRound == 5) {
+                            //il client invia 10 carte, le raggruppo in 2 tris da 3 e 1 scala da 4
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 6)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(6, 10)));
+                        } else if (currentRound == 6) {
+                            //il client invia 11 carte, le raggruppo in 1 tris da 3 e 2 scale da 4
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 7)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(7, 11)));
+                        } else if (currentRound == 7) {
+                            //il client invia 12 carte, le raggruppo in 4 tris da 3
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 3)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(3, 6)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(6, 9)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(9, 12)));
+                        } else if (currentRound == 8) {
+                            //il client invia 12 carte, le raggruppo in 3 scale da 4
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(0, 4)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(4, 8)));
+                            setsDelGiocatore.add(new ArrayList<>(carteAperte.subList(8, 12)));
+                        }
+
+                        //aggiungo i set del giocatore al tavolo
+                        apertureSulTavolo.put(playerId, setsDelGiocatore);
+
+                        System.out.println("[SERVER] Player " + playerId + " ha aperto. Tavolo aggiornato.");
+
+                        //notifico tutti i client il tavolo aggiornato
+                        broadcastTableState();
+                    } else if (line.startsWith("APRI_EXTRA:")){ //il client invia le sue carte usate per l'apertura extra
+                        String carteString = line.substring(11).trim();
+                        String[] cardFilenames = carteString.split(",");
+                        
+                        //lista per conservare le carte dell'apertura extra
+                        List<Carta> carteAperteExtra  = new ArrayList<>();
+                        for (String filename : cardFilenames) {
+                            Carta carta = parseCartaFromFileNameString(filename);
+                            if (carta != null) {
+                                carteAperteExtra.add(carta);
+                            }
+                        }
+
+                        //rimuovo una carta alla volta al posto di usare removeAll (andrebbe a rimuovere carte uguali nella mano che invece non deve eliminare)
+                        List<Carta> manoCorrente = maniGiocatori.get(playerId);
+                        for(Carta cartaAperta : carteAperteExtra) {
+                            manoCorrente.remove(cartaAperta);
+                        }
+
+                        //recupero la lista di set esistenti per il giocatore che esegue l'apertura extra
+                        List<List<Carta>> setsEsistentiDelGiocatore = apertureSulTavolo.get(playerId);
+                        if (setsEsistentiDelGiocatore == null) { //non dovrebbe essere possibile perché APRI_EXTRA può essere fatto dopo un APRI di base
+                            setsEsistentiDelGiocatore = new ArrayList<>();
+                            apertureSulTavolo.put(playerId, setsEsistentiDelGiocatore);
+                        }
+
+                        if (carteAperteExtra.size()==3) { //TRIS
+                            setsEsistentiDelGiocatore.add(new ArrayList<>(carteAperteExtra.subList(0, 3)));
+                        } else if (carteAperteExtra.size()==4) { //SCALA
+                            setsEsistentiDelGiocatore.add(new ArrayList<>(carteAperteExtra.subList(0, 4)));
+                        } else {
+                            System.out.println("[SERVER] Errore nell'apertura extra.");
+                        }
+
+                        //aggiungo i set del giocatore al tavolo
+                        apertureSulTavolo.put(playerId, setsEsistentiDelGiocatore);
+
+                        System.out.println("[SERVER] Player " + playerId + " ha aperto extra. Tavolo aggiornato.");
+                        //notifico tutti i client il tavolo aggiornato
+                        broadcastTableState();                        
+                    } else if (line.startsWith("JOKER_SOSTITUTI:")){ //il client invia il/i joker usati
+                        /*arriva un messaggio di questo tipo: 
+                            "JOKER_SOSTITUTI:0:8_hearts.jpg|1:7_clubs.jpg" -> un joker per ogni apertura
+                            "JOKER_SOSTITUTI:0:8_hearts.jpg,8_clubs.jpg"   -> due joker nella stessa apertura (per 2,3 o 4 joker è di questo tipo)
+                        */
+                        //il numero prima della carta indica in quale apertura è presente il joker
+                        int separatorIndex = line.indexOf(':'); //cerca i primi due punti
+                        if (separatorIndex != -1) {
+                            String apertureJokerString = line.substring(separatorIndex + 1).trim();
+                            String[] apertureTokens = apertureJokerString.split("\\|"); //separo per ogni "|" ossia per ogni apertura
+
+                            for (String aperturaToken : apertureTokens) {
+                                String[] aperturaParts = aperturaToken.split(":");
+                                int aperturaIndex = Integer.parseInt(aperturaParts[0]); //indice legato all'apertura
+                                String carteStr = aperturaParts[1]; //es: 8_hearts.jpg,8_diamonds.jpg
+
+                                String[] carteArray = carteStr.split(","); //separo per ogni "," ossia per ogni carta
+                            
+                                synchronized (ServerMain.class) {
+                                    //se non esiste ancora una mappa per quel playerId ne creo una nuova
+                                    List<Carta> listaCarte = jokerSulTavolo
+                                        .computeIfAbsent(playerId, k -> new HashMap<>())
+                                        .computeIfAbsent(aperturaIndex, k -> new ArrayList<>());
+                                    
+                                    for(String cStr : carteArray){
+                                        Carta carta = parseCartaFromFileNameString(cStr);
+                                        if (carta != null) {  //qui la carta dovrebbe sempre esistere se non ci sono errori
+                                            listaCarte.add(carta);
+                                        } else {
+                                            System.err.println("Errore di parsing del filename: " + cStr);
+                                        }
+                                    }
+                                }
+                            }
+
+                            broadcastJokerState();
+                        }
+                        
                     } else if (line.equals("DISCONNETTI")){
                         playerId = clients.indexOf(this);
                         System.out.println("[SERVER] Player " + playerId + " si è disconnesso volontariamente.");
@@ -178,9 +405,28 @@ public class ServerMain {
             System.out.println("Inviato 'TOCCA_A_TE' al player " + currentPlayerIndex);
         }
 
-        //metodo per inviare un messaggio specifico a questo client
+        //per inviare un messaggio specifico a questo client
         public void sendToClient(String message) {
             out.println(message);
+        }
+
+        //aggiunge la carta pescata alla mano del giocatore passato come parametro
+        public void pescaCartaDalMazzo(int playerId){
+            Carta pescata;
+            synchronized (deck) {
+                pescata = deck.remove(deck.size() - 1);
+            }
+            if(deck.isEmpty()){
+                reGenerateDeck();
+                broadcastMessage("PILA_SCARTI:" + serializePilaScarti()); //invio a TUTTI la pila degli scarti vuota con solo la cima
+            }
+            maniGiocatori.get(playerId).add(pescata);
+            
+            //INVIO SOLO AL PLAYER CHE PESCA
+            clients.get(playerId).out.println("PESCATA:" + pescata.getImageFilename());
+            //INVIO A TUTTI aggiornamenti generali
+            broadcastMessage("CARTE_MAZZO:" + deck.size()); //invio a TUTTI quante carte sono presenti nel mazzo quando qualcuno pesca
+            broadcastMessage("CARTA_PESCATA:" + pescata.getImageFilename()); //invio a TUTTI che carta è stata pescata
         }
     }
 
@@ -189,12 +435,64 @@ public class ServerMain {
         ClientHandler prossimo = clients.get(currentPlayerIndex);
         System.out.println("[SERVER] Tocca a player " + currentPlayerIndex);
         prossimo.notificaTurno();
+
+        System.out.println("\nPLAYER 0:");
+        for(int i = 0; i < maniGiocatori.get(0).size(); i++){
+            System.out.println(maniGiocatori.get(0).get(i).getImageFilename());
+        }
+        System.out.println("\nPLAYER 1:");
+        for(int i = 0; i < maniGiocatori.get(1).size(); i++){
+            System.out.println(maniGiocatori.get(1).get(i).getImageFilename());
+        }
+        System.out.println("\nPLAYER 2:");
+        for(int i = 0; i < maniGiocatori.get(2).size(); i++){
+            System.out.println(maniGiocatori.get(2).get(i).getImageFilename());
+        }
+        System.out.println("\nPLAYER 3:");
+        for(int i = 0; i < maniGiocatori.get(3).size(); i++){
+            System.out.println(maniGiocatori.get(3).get(i).getImageFilename());
+        }
     }
 
+    //converto una stringa (nel formato della carta tipo 8H) in un oggetto di tipo Carta
     private static Carta parseCartaFromString(String s) {
         if (s.equalsIgnoreCase("Jolly") || s.equalsIgnoreCase("Joker")) return new Carta("Joker", null);
         String valore = s.substring(0, s.length() - 1);
         String seme = s.substring(s.length() - 1);
+        return new Carta(valore, seme);
+    }
+
+    //converto una stringa (nel formato fileName della carta del tipo valore_seme.jpg) in un oggetto di tipo Carta
+    private static Carta parseCartaFromFileNameString(String filename) {
+        if (filename.equalsIgnoreCase("Jolly.jpg") || filename.equalsIgnoreCase("Joker.jpg")) return new Carta("Joker", null);
+
+        //rimuovo l'estensione .jpg
+        String baseFilename = filename.replace(".jpg", "");
+
+        //il formato ora è valore_seme
+        String[] parts = baseFilename.split("_");
+        if (parts.length != 2) {
+            System.err.println("Errore di parsing del filename: " + filename);
+            return null;
+        }
+
+        String valore = parts[0];
+        String nomeSeme = parts[1];
+
+        //mappo il nome del seme al codice del seme
+        String seme = switch (nomeSeme) {
+            case "spades" -> "S";
+            case "hearts" -> "H";
+            case "diamonds" -> "D";
+            case "clubs" -> "C";
+            default -> null; //seme non riconosciuto
+        };
+
+        if (seme == null) {
+            System.err.println("Seme non riconosciuto dal filename: " + filename);
+            return null;
+        }
+
         return new Carta(valore, seme);
     }
 
@@ -212,7 +510,7 @@ public class ServerMain {
         // tutte le mani rimanenti.
     }
 
-    //metodo per ricevere le carte rimanenti e calcolare i punti
+    //metodo per ricevere le carte rimanenti in mano alla fine del turno e calcolare i punti
     public static synchronized void receiveRemainingCards(int playerId, List<Carta> remainingHand) {
         //calcolo i punti per la mano rimanente del giocatore
         int puntiMano = calcolaPuntiMano(remainingHand);
@@ -262,6 +560,16 @@ public class ServerMain {
         return puntiTot;
     }
 
+    //helper per formattare i punteggi per l'invio ai client
+    private static String formatPunteggi() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            sb.append("Player ").append(i).append(": ").append(punteggiGiocatori.getOrDefault(i, 0)).append(";");
+        }
+        sb.setLength(sb.length() - 1); //rimuovo l'ultimo ";"
+        return sb.toString();
+    }
+
     //metodo per avviare un nuovo round
     private static synchronized void startNewRound() {
         currentRound++;
@@ -275,15 +583,18 @@ public class ServerMain {
 
         //azzero le mani di tutti i giocatori
         maniGiocatori.clear();
-
-        //rimescolo il mazzo completo
-        deck.clear();
+        
+        deck.clear();   //svuoto il mazzo
         generateDeck(); //rigenero un nuovo mazzo completo
 
         //svuoto la pila degli scarti per il nuovo round
         pilaScarti.clear();
 
-        //currentPlayerIndex è già stato aggiornato in passaAlProssimoGiocatore() quando il giocatore ha scartato/aperto
+        //svuoto il tavolo
+        apertureSulTavolo.clear();
+
+        //svuoto i joker
+        jokerSulTavolo.clear();
 
         giocatoriProntiPerNuovoRound = 0; //resetto il contatore per il prossimo round
 
@@ -297,17 +608,142 @@ public class ServerMain {
             clients.get(i).sendToClient("PUNTEGGI_AGGIORNATI:" + formatPunteggi());
         }
 
-        //notifico al giocatore che deve iniziare il turno
-        clients.get(currentPlayerIndex).notificaTurno();
+        clients.get(currentPlayerIndex).notificaTurno(); //notifico al giocatore che deve iniziare il turno
     }
 
-    //helper per formattare i punteggi per l'invio ai client
-    private static String formatPunteggi() {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            sb.append("Player ").append(i).append(": ").append(punteggiGiocatori.getOrDefault(i, 0)).append(";");
+    //per convertire la pila degli scarti (Stack<Carta>) in una stringa per l'invio ai client
+    private static String serializePilaScarti() {
+        if (pilaScarti.isEmpty()) {
+            return "VUOTA";
         }
-        sb.setLength(sb.length() - 1); //rimuovo l'ultimo ";"
+        //creo una lista temporanea per iterare dal basso all'alto se necessario, o direttamente dallo stack se il client 
+        //gestisce l'ordine. Per semplicità, inviamo l'ultima carta scartata come prima della stringa, che è la cima della pila
+        StringBuilder sb = new StringBuilder();
+        //itero dalla base dello stack per mantenere un ordine consistente per il client 
+        //Per coerenza con aggiornaPilaScartiGrafica nel Client, invio dalla base alla cima.
+        
+        //converto lo Stack in List per poterlo serializzare in ordine di aggiunta
+        List<Carta> tempPila = new ArrayList<>(pilaScarti);
+        
+        for (int i = 0; i < tempPila.size(); i++) {
+            sb.append(tempPila.get(i).getImageFilename());
+            if (i < tempPila.size() - 1) {
+                sb.append(",");
+            }
+        }
         return sb.toString();
     }
+
+    //per gestire la fase di richiesta di tormento
+    public static void gestisciTormento(int idGiocatore, boolean siTormenta) {
+        if (siTormenta) { //il giocatore decide di TORMENTARSI -> prende la carta dalla pila degli scarti + una dal mazzo
+            Carta dallaPila = pilaScarti.pop();
+            Carta dalMazzo = deck.remove(deck.size()-1);
+
+            maniGiocatori.get(idGiocatore).add(dallaPila);
+            maniGiocatori.get(idGiocatore).add(dalMazzo);
+
+            broadcastMessage("TORMENTO_ESEGUITO:" + idGiocatore); //quando riceve il messaggio aggiorna la mano
+            sendMessageToNextPlayer("TORMENTO_ESEGUITO_CARTE_AGGIUNTE:" + dallaPila.getImageFilename() + ";" + dalMazzo.getImageFilename());
+            
+            broadcastMessage("PILA_SCARTI:" + serializePilaScarti()); //invio a TUTTI la pila degli scarti
+            broadcastMessage("CARTE_MAZZO:" + deck.size()); //invio a TUTTI quante carte sono presenti nel mazzo
+        } else {
+            System.out.println("[SERVER] Tormento ignorato dal Player " + idGiocatore);
+        }
+    }
+
+    //per inviare un messaggio a tutti i client
+    public static synchronized void broadcastMessage(String message) {
+        System.out.println("[SERVER - BROADCAST] " + message);
+        for (ClientHandler client : clients) {
+            client.sendToClient(message);
+        }
+    }
+
+    /**
+     * Invia un messaggio al giocatore successivo rispetto al currentPlayerIndex attuale.
+     * Se currentPlayerIndex è l'ultimo giocatore, il messaggio va al primo giocatore.
+     *
+     * @param message Il messaggio da inviare.
+     */
+    public static synchronized void sendMessageToNextPlayer(String message) {
+        int nextPlayerId = (currentPlayerIndex + 1) % MAX_PLAYERS;
+
+        //(nel caso in cui non tutti gli slot siano occupati, o un client si sia disconnesso)
+        if (nextPlayerId >= 0 && nextPlayerId < clients.size()) {
+            ClientHandler nextClient = clients.get(nextPlayerId);
+            System.out.println("[SERVER - MESSAGGIO AL PLAYER " + nextPlayerId + "]: " + message);
+            nextClient.sendToClient(message);
+        } else {
+            System.out.println("[SERVER - ERRORE] Impossibile trovare il client successivo con ID " + nextPlayerId);
+        }
+    }
+
+    //invio a tutti i client il tavolo aggiornato
+    public static synchronized void broadcastTableState() {
+        StringBuilder tableState = new StringBuilder("TAVOLO_AGGIORNATO:");
+        for (Map.Entry<Integer, List<List<Carta>>> entry : apertureSulTavolo.entrySet()) {
+            int playerId = entry.getKey();
+            List<List<Carta>> sets = entry.getValue();
+            if (!sets.isEmpty()) {
+                tableState.append(playerId).append(":");
+                for (List<Carta> set : sets) {
+                    //serializzo ogni carta del set (tris/scala)
+                    for (Carta card : set) {
+                        tableState.append(card.getImageFilename()).append(",");
+                    }
+                    tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultima virgola
+                    tableState.append(";"); //delimitatore tra set
+                }
+                tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultimo punto e virgola
+                tableState.append("|"); //delimitatore tra giocatori
+            }
+        }
+        if (tableState.length() > "TAVOLO_AGGIORNATO:".length()) {
+            tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultimo pipe
+        }
+        broadcastMessage(tableState.toString());
+    }
+
+    //invio a tutti i client i joker sul tavolo aggiornati. Es. messaggio "JOKER_AGGIORNATI:1:0=8_picche.jpg;1=8_picche.jpg"
+    public static synchronized void broadcastJokerState() {
+        StringBuilder jokerState = new StringBuilder("JOKER_AGGIORNATI:");
+
+        for (Map.Entry<Integer, Map<Integer, List<Carta>>> playerEntry : jokerSulTavolo.entrySet()) {
+            int playerId = playerEntry.getKey();
+            Map<Integer, List<Carta>> apertureMap = playerEntry.getValue();
+
+            jokerState.append(playerId).append(":");
+
+            for (Map.Entry<Integer, List<Carta>> aperturaEntry : apertureMap.entrySet()) {
+                int aperturaIndex = aperturaEntry.getKey();
+                List<Carta> carte = aperturaEntry.getValue();
+
+                jokerState.append(aperturaIndex).append("=");
+
+                //aggiungo tutte le carte della lista separatamente, separate da virgola
+                for (int i = 0; i < carte.size(); i++) {
+                    Carta c = carte.get(i);
+                    if (c != null) {
+                        jokerState.append(c.getImageFilename());
+                        if (i < carte.size() - 1) {
+                            jokerState.append(","); //separatore tra più Joker nella stessa apertura
+                        }
+                    }
+                }
+
+                jokerState.append(";"); //separatore tra aperture
+            }
+            jokerState.deleteCharAt(jokerState.length() - 1); //rimuovo ultimo ;
+            jokerState.append("|"); //separatore tra giocatori
+        }
+
+        if (jokerState.length() > "JOKER_AGGIORNATI:".length()) {
+            jokerState.deleteCharAt(jokerState.length() - 1); //rimuovo ultimo |
+        }
+
+        broadcastMessage(jokerState.toString());
+    }
+
 }
