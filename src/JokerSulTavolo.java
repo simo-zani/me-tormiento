@@ -24,7 +24,7 @@ public class JokerSulTavolo {
         return jokerAssociato;
     }
 
-    public String getSemeSostituo(){
+    public String getSemeSostituto(){
         return semeSostituto;
     }
 

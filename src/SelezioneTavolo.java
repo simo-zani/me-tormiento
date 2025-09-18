@@ -5,7 +5,7 @@ public class SelezioneTavolo {
     private List<Carta> aperturaAssociata; //l'apertura (tris o scala) a cui si vuole attaccare
     private Carta cartaCliccata;           //l'elemento specifico cliccato (una Carta se è un Joker, o un riferimento a un placeholder)
     private final int idGiocatore;         //per risalire al giocatore che ha messo sul tavolo l'apertura a cui appartiene la carta selezionata
-    private final String posizioneAttacco; //per capire se viene selezionato un placeholder prima o dopo la scala (nei tris sarà sempre dopo)
+    private final String posizioneAttacco; //"sx"/"dx" -> per capire se viene selezionato un placeholder prima o dopo la scala (nei tris sarà sempre dopo)
 
     public SelezioneTavolo(List<Carta> apertura, Carta cartaCliccata, int idGiocatore, String posizioneAttacco) {
         this.aperturaAssociata = apertura;

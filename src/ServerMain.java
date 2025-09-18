@@ -20,6 +20,7 @@ public class ServerMain {
     private static int carteMano = 6; //al primo round
     private static int currentRound = 1;
     private static final Map<Integer, Integer> punteggiGiocatori = new HashMap<>(); //per tenere traccia dei punteggi cumulativi
+    private static final Map<Integer, Integer> roundVinti = new HashMap<>(); //per tenere traccia dei round vinti dai giocatori
     private static int giocatoriProntiPerNuovoRound = 0; //contatore per sapere quando tutti i client sono pronti
     private static Timer tormentoTimer;
     //mappa che associa l'ID del giocatore ai set che ha aperto; ogni set è una lista di carte (tris o scale)
@@ -37,6 +38,7 @@ public class ServerMain {
             ClientHandler handler = new ClientHandler(socket);
             clients.add(handler);
             punteggiGiocatori.put(clients.indexOf(handler), 0); //inizializzo i punteggi dei giocatori a 0
+            roundVinti.put(clients.indexOf(handler), 0);        //inizializzo i round vinti dai giocatori a 0
             new Thread(handler).start();
             System.out.println("[SERVER] Giocatore connesso. Totale: " + clients.size() + " giocatori online");
         }
@@ -240,7 +242,20 @@ public class ServerMain {
                         //rimuovo una carta alla volta al posto di usare removeAll (andrebbe a rimuovere carte uguali nella mano che invece non deve eliminare)
                         List<Carta> manoCorrente = maniGiocatori.get(playerId);
                         for(Carta cartaAperta : carteAperte) {
-                            manoCorrente.remove(cartaAperta);
+                            if (cartaAperta.isJoker()) {
+                                //rimuovo il primo Joker trovato nella mano
+                                Iterator<Carta> it = manoCorrente.iterator();
+                                while (it.hasNext()) {
+                                    Carta c = it.next();
+                                    if (c.isJoker()) {
+                                        it.remove();
+                                        break;
+                                    }
+                                }
+                            } else {
+                                //carte normali: basta equals
+                                manoCorrente.remove(cartaAperta);
+                            }
                         }
 
                         //raggruppo le carte in set in base al round (2 tris, 1 tris e 1 scala, ecc.)
@@ -309,7 +324,20 @@ public class ServerMain {
                         //rimuovo una carta alla volta al posto di usare removeAll (andrebbe a rimuovere carte uguali nella mano che invece non deve eliminare)
                         List<Carta> manoCorrente = maniGiocatori.get(playerId);
                         for(Carta cartaAperta : carteAperteExtra) {
-                            manoCorrente.remove(cartaAperta);
+                            if (cartaAperta.isJoker()) {
+                                //rimuovo il primo Joker trovato nella mano
+                                Iterator<Carta> it = manoCorrente.iterator();
+                                while (it.hasNext()) {
+                                    Carta c = it.next();
+                                    if (c.isJoker()) {
+                                        it.remove();
+                                        break;
+                                    }
+                                }
+                            } else {
+                                //carte normali: basta equals
+                                manoCorrente.remove(cartaAperta);
+                            }
                         }
 
                         //recupero la lista di set esistenti per il giocatore che esegue l'apertura extra
@@ -368,6 +396,142 @@ public class ServerMain {
                                 }
                             }
 
+                            broadcastJokerState();
+                        }
+                        
+                    } else if (line.startsWith("SWAP_CARTE:")){ //il client invia lo swap carte
+                        /*arriva un messaggio di questo tipo: 
+                            "SWAP_CARTE:joker.jpg,carta.jpg,idGiocatoreApertura,aperturaIndex,posizioneJokerNell'Apertura"
+                        */
+                        String swapString = line.substring(11).trim();
+                        String[] dati = swapString.split(",");
+                        String jokerFilename = dati[0];
+                        String cartaFilename = dati[1];
+                        int idGiocatoreApertura = Integer.parseInt(dati[2]);
+                        int aperturaIndex = Integer.parseInt(dati[3]);
+                        int posJoker = Integer.parseInt(dati[4]);
+
+                        playerId = clients.indexOf(this); //id del client che ha inviato lo swap
+
+                        //ricostruisco le carte dagli imageFilename
+                        Carta joker = parseCartaFromFileNameString(jokerFilename);
+                        Carta carta = parseCartaFromFileNameString(cartaFilename);
+
+                        //aggiorno la mano del giocatore che ha fatto lo swap
+                        int posCarta = -1;
+                        for (int i = 0; i < maniGiocatori.get(playerId).size(); i++) {
+                            if (maniGiocatori.get(playerId).get(i).equals(carta)) {
+                                posCarta = i;
+                                break;
+                            }
+                        }
+                        if (posCarta != -1) {
+                            maniGiocatori.get(playerId).set(posCarta, joker);
+                        }
+
+                        //aggiorno il tavolo scambiando il joker con la carta al suo posto
+                        List<Carta> apertura = apertureSulTavolo.get(idGiocatoreApertura).get(aperturaIndex);
+                        apertura.set(posJoker, carta); //sostituisce l'oggetto Carta in posJoker con l'oggetto "carta" di tipo Carta
+                        
+                        //aggiorno la struttura dei joker sul tavolo -> rimuovo il joker (e anche il giocatore se non ha più joker sul tavolo) dalla mappa
+                        Map<Integer, List<Carta>> apertureJoker = jokerSulTavolo.get(idGiocatoreApertura);
+                        if (apertureJoker != null) {
+                            List<Carta> sostituti = apertureJoker.get(aperturaIndex);
+                            if (sostituti != null) {
+                                //rimuovo la carta sostituita dal Joker appena scambiato
+                                sostituti.remove(carta);
+                                //se la lista dei sostituti è vuota (per il giocatore associato), rimuovo l'intera entrata per quell'apertura
+                                if (sostituti.isEmpty()) {
+                                    apertureJoker.remove(aperturaIndex);
+                                }
+                            }
+                            //se il giocatore non ha più Joker sul tavolo, rimuovo la sua entry
+                            if (apertureJoker.isEmpty()) {
+                                jokerSulTavolo.remove(idGiocatoreApertura);
+                            }
+                        }
+
+                        //mando a tutti i client l'aggiornamento del tavolo
+                        broadcastTableState();
+                        broadcastJokerState();
+                        
+                    } else if (line.startsWith("ATTACCA_CARTA:")){ //il client invia la carta da attaccare
+                        /*arriva un messaggio di questo tipo: 
+                            "ATTACCA_CARTA:cartaDaAttaccare.jpg,jokerSostituto.jpg,idGiocatoreApertura,aperturaIndex,posizioneAttacco (dx o sx)"
+                        */
+                        String attaccoString = line.substring(14).trim();
+                        String[] dati = attaccoString.split(",");
+
+                        String cartaDaAttaccareFilename = dati[0];
+                        String jokerSostitutoFilename = dati[1]; //sarà una stringa vuota se il client attacca una carta nota
+                        int idGiocatoreApertura = Integer.parseInt(dati[2]);
+                        int aperturaIndex = Integer.parseInt(dati[3]);
+                        String posAttacco = dati[4];
+
+                        playerId = clients.indexOf(this); //id del client che ha inviato la carta da attaccare
+
+                        //ricostruisco la carta da attaccare e il sostituto Joker (se esiste)
+                        Carta cartaDaAttaccare = parseCartaFromFileNameString(cartaDaAttaccareFilename);
+                        Carta jokerSostituto = null;
+                        if(!jokerSostitutoFilename.isEmpty()){
+                            jokerSostituto = parseCartaFromFileNameString(jokerSostitutoFilename);
+                        }
+
+                        //rimuovo la carta dalla mano del giocatore che ha fatto l'attacco
+                        if (cartaDaAttaccare.isJoker()) {
+                            int posJokerInMano = -1;
+                            for (int i = 0; i < maniGiocatori.get(playerId).size(); i++) {
+                                if (maniGiocatori.get(playerId).get(i).isJoker()) {
+                                    posJokerInMano = i;
+                                    break; 
+                                }
+                            }
+                            if (posJokerInMano != -1) {
+                                maniGiocatori.get(playerId).remove(posJokerInMano);
+                            }
+                        } else {
+                            int posCarta = -1;
+                            for (int i = 0; i < maniGiocatori.get(playerId).size(); i++) {
+                                if (maniGiocatori.get(playerId).get(i).equals(cartaDaAttaccare)) {
+                                    posCarta = i;
+                                    break;
+                                }
+                            }
+                            if (posCarta != -1) {
+                                maniGiocatori.get(playerId).remove(posCarta);
+                            }
+                        }
+
+                        System.out.println("DEBUG: Stato del tavolo PRIMA dell'attacco:");
+                        System.out.println(apertureSulTavolo);
+
+                        //aggiorno il tavolo attaccando la carta/joker al posto corretto (dx o sx -> se tris per forza a dx)
+                        List<Carta> apertura = apertureSulTavolo.get(idGiocatoreApertura).get(aperturaIndex);
+                        if (posAttacco.equals("sx")) {
+                            apertura.add(0, cartaDaAttaccare); //aggiunta in testa e shifta tutti gli altri oggetti
+                        } else {
+                            apertura.add(cartaDaAttaccare); //aggiunta in coda
+                        }
+                        
+                        //se attacco un joker aggiorno la struttura dei joker sul tavolo -> aggiungo il joker (e anche il giocatore se non ha joker sul tavolo) dalla mappa
+                        if(cartaDaAttaccare.isJoker()){
+                            Map<Integer, List<Carta>> apertureJoker = jokerSulTavolo.getOrDefault(idGiocatoreApertura, new HashMap<>());
+                            List<Carta> sostituti = apertureJoker.getOrDefault(aperturaIndex, new ArrayList<>());
+
+                            //se c'è già un joker sostituto nella scala allora devo inserirlo in modo ordinato
+                            if (posAttacco.equals("sx")) {
+                                sostituti.add(0, jokerSostituto);
+                            } else {
+                                sostituti.add(jokerSostituto);
+                            }
+
+                            apertureJoker.put(aperturaIndex, sostituti);
+                            jokerSulTavolo.put(idGiocatoreApertura, apertureJoker);
+                        }
+
+                        //mando a tutti i client l'aggiornamento del tavolo
+                        broadcastTableState();
+                        if (cartaDaAttaccare.isJoker()){
                             broadcastJokerState();
                         }
                         
@@ -512,12 +676,19 @@ public class ServerMain {
 
     //metodo per ricevere le carte rimanenti in mano alla fine del turno e calcolare i punti
     public static synchronized void receiveRemainingCards(int playerId, List<Carta> remainingHand) {
-        //calcolo i punti per la mano rimanente del giocatore
-        int puntiMano = calcolaPuntiMano(remainingHand);
-        
-        //aggiungo i punti al punteggio cumulativo del giocatore
-        punteggiGiocatori.put(playerId, punteggiGiocatori.get(playerId) + puntiMano);
-        System.out.println("[SERVER] Punti per Giocatore " + playerId + " in questo round: " + puntiMano + ". Totale: " + punteggiGiocatori.get(playerId));
+        if(remainingHand.isEmpty()){
+            //il giocatore ha vinto il round
+            int vittorieAttuali = roundVinti.getOrDefault(playerId, 0);
+            roundVinti.put(playerId, vittorieAttuali + 1);
+            System.out.println("[SERVER] Giocatore " + playerId + " ha vinto il round! Vittorie totali: " + roundVinti.get(playerId));
+        } else {
+            //il giocatore ha perso il round quindi calcolo i punti per le carte rimanenti in mano
+            int puntiMano = calcolaPuntiMano(remainingHand);
+            
+            //aggiungo i punti al punteggio cumulativo del giocatore
+            punteggiGiocatori.put(playerId, punteggiGiocatori.get(playerId) + puntiMano);
+            System.out.println("[SERVER] Punti per Giocatore " + playerId + " in questo round: " + puntiMano + ". Totale: " + punteggiGiocatori.get(playerId));
+        }
 
         giocatoriProntiPerNuovoRound++;
         if (giocatoriProntiPerNuovoRound == MAX_PLAYERS) {
@@ -683,66 +854,79 @@ public class ServerMain {
     //invio a tutti i client il tavolo aggiornato
     public static synchronized void broadcastTableState() {
         StringBuilder tableState = new StringBuilder("TAVOLO_AGGIORNATO:");
+        boolean firstPlayer = true;
+
         for (Map.Entry<Integer, List<List<Carta>>> entry : apertureSulTavolo.entrySet()) {
             int playerId = entry.getKey();
             List<List<Carta>> sets = entry.getValue();
+
             if (!sets.isEmpty()) {
-                tableState.append(playerId).append(":");
-                for (List<Carta> set : sets) {
-                    //serializzo ogni carta del set (tris/scala)
-                    for (Carta card : set) {
-                        tableState.append(card.getImageFilename()).append(",");
-                    }
-                    tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultima virgola
-                    tableState.append(";"); //delimitatore tra set
+                if (!firstPlayer) {
+                    tableState.append("|"); //aggiungo il separatore "|" tra i giocatori solo se non è il primo giocatore
                 }
-                tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultimo punto e virgola
-                tableState.append("|"); //delimitatore tra giocatori
+
+                tableState.append(playerId).append(":");
+                boolean firstSet = true;
+
+                for (List<Carta> set : sets) {
+                    if (!firstSet) {
+                        tableState.append(";"); //aggiungo il separatore ";" tra le aperture solo se non è la prima apertura del un giocatore
+                    }
+
+                    boolean firstCard = true;
+                    for (Carta card : set) {
+                        if (!firstCard) {
+                            tableState.append(","); //aggiungo il separatore "," tra le carte solo se non è la prima carta dell'apertura
+                        }
+                        tableState.append(card.getImageFilename());
+                        firstCard = false;
+                    }
+                    firstSet = false;
+                }
+                firstPlayer = false;
             }
-        }
-        if (tableState.length() > "TAVOLO_AGGIORNATO:".length()) {
-            tableState.deleteCharAt(tableState.length() - 1); //rimuovo l'ultimo pipe
         }
         broadcastMessage(tableState.toString());
     }
-
-    //invio a tutti i client i joker sul tavolo aggiornati. Es. messaggio "JOKER_AGGIORNATI:1:0=8_picche.jpg;1=8_picche.jpg"
+    
+    //invio a tutti i client i joker sul tavolo aggiornati. Es. messaggio "JOKER_AGGIORNATI:1:0=8_spades.jpg;1=8_clubs.jpg|2:1=3_diamonds.jpg"
     public static synchronized void broadcastJokerState() {
         StringBuilder jokerState = new StringBuilder("JOKER_AGGIORNATI:");
+        boolean firstPlayer = true;
 
+        //i separatori (|, ;, ,) vengono aggiunti prima di ogni elemento (giocatore, apertura o carta) se non è il primo della sequenza
         for (Map.Entry<Integer, Map<Integer, List<Carta>>> playerEntry : jokerSulTavolo.entrySet()) {
+            if (!firstPlayer) {
+                jokerState.append("|"); //separatore tra i giocatori
+            }
             int playerId = playerEntry.getKey();
             Map<Integer, List<Carta>> apertureMap = playerEntry.getValue();
-
             jokerState.append(playerId).append(":");
-
+            
+            boolean firstApertura = true;
             for (Map.Entry<Integer, List<Carta>> aperturaEntry : apertureMap.entrySet()) {
+                if (!firstApertura) {
+                    jokerState.append(";"); //separatore tra le aperture
+                }
                 int aperturaIndex = aperturaEntry.getKey();
                 List<Carta> carte = aperturaEntry.getValue();
-
                 jokerState.append(aperturaIndex).append("=");
-
-                //aggiungo tutte le carte della lista separatamente, separate da virgola
-                for (int i = 0; i < carte.size(); i++) {
-                    Carta c = carte.get(i);
+                
+                boolean firstCard = true;
+                for (Carta c : carte) {
+                    if (!firstCard) {
+                        jokerState.append(","); //separatore tra le carte
+                    }
                     if (c != null) {
                         jokerState.append(c.getImageFilename());
-                        if (i < carte.size() - 1) {
-                            jokerState.append(","); //separatore tra più Joker nella stessa apertura
-                        }
                     }
+                    firstCard = false;
                 }
-
-                jokerState.append(";"); //separatore tra aperture
+                firstApertura = false;
             }
-            jokerState.deleteCharAt(jokerState.length() - 1); //rimuovo ultimo ;
-            jokerState.append("|"); //separatore tra giocatori
+            firstPlayer = false;
         }
-
-        if (jokerState.length() > "JOKER_AGGIORNATI:".length()) {
-            jokerState.deleteCharAt(jokerState.length() - 1); //rimuovo ultimo |
-        }
-
+        
         broadcastMessage(jokerState.toString());
     }
 

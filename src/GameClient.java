@@ -592,7 +592,7 @@ public class GameClient extends Application {
                 scrollPaneTavolo.setManaged(false);
                 confermaAttaccaBtn.setVisible(false);
                 confermaAttaccaBtn.setManaged(false);
-                confermaAttaccaBtn.setDisable(false);
+                confermaAttaccaBtn.setDisable(true);
                 //cancello le selezioni
                 cartaManoSelezionata = null;
                 elementoTavoloSelezionato = null;
@@ -607,14 +607,14 @@ public class GameClient extends Application {
             if (attaccoValido) { //attacco valido
                 cartaManoSelezionata = null;
                 elementoTavoloSelezionato = null;
-                confermaAttaccaBtn.setDisable(false);
+                confermaAttaccaBtn.setDisable(true);
                 aggiornaManoGUI();
                 aggiornaTavoloGUI();
             } else {  //attacco non valido
                 out.println("ATTACCO ERRORE");
                 cartaManoSelezionata = null;
                 elementoTavoloSelezionato = null;
-                confermaAttaccaBtn.setDisable(false);
+                confermaAttaccaBtn.setDisable(true);
                 aggiornaManoGUI();
                 aggiornaTavoloGUI();
             }
@@ -986,38 +986,48 @@ public class GameClient extends Application {
                         });
                     } else if (line.startsWith("JOKER_AGGIORNATI:")) { //il server comunica a tutti i joker sul tavolo
                         //esempio messaggio: "JOKER_AGGIORNATI:0:0=8_diamonds.jpg,8_hearts.jpg;1=7_clubs.jpg|1:0=1_spades.jpg"
+                        //può anche arrivare un messaggio vuoto nel caso in cui si passa da un joker su un tavolo a zero dopo uno swap
                         String jokerTotaliString = line.substring(17);
-                        String[] playerTokens = jokerTotaliString.split("\\|"); //separo i giocatori
-
-                        //ciclo i giocatori
-                        for(String playerToken : playerTokens){
-                            String[] playerParts = playerToken.split(":");
-                            int playerId = Integer.parseInt(playerParts[0]); //es: "0"
-                            String apertureData = playerParts[1]; //es: "0=8_diamonds.jpg,8_hearts.jpg;1=7_clubs.jpg"
-
-                            Map<Integer, List<Carta>> apertureMap = new HashMap<>();
-
-                            String[] apertureTokens = apertureData.split(";");
-
-                            //ciclo le aperture dei giocatori
-                            for(String aperturaToken : apertureTokens){
-                                String[] parts = aperturaToken.split("=");
-                                int aperturaIndex = Integer.parseInt(parts[0]); //es: "0"
-                                String[] carteStr = parts[1].split(","); //es: "8_diamonds.jpg" "8_hearts.jpg"
-
-                                List<Carta> carte = new ArrayList<>();
-                                for(String cStr : carteStr){
-                                    Carta c = cartaFromFileName(cStr);
-                                    if(c != null) carte.add(c);
-                                }
-                                apertureMap.put(aperturaIndex, carte);
-                            }
-
-                            jokerTotaliSulTavolo.put(playerId, apertureMap);
-
+                        
+                        //controllo se la stringa è vuota
+                        if (jokerTotaliString.isEmpty()) {
+                            jokerTotaliSulTavolo.clear(); //svuoto la mappa dei jolly
                             javafx.application.Platform.runLater(() -> {
-                                aggiornaTavoloGUI();
+                                aggiornaTavoloGUI(); 
                             });
+                        } else {
+                            String[] playerTokens = jokerTotaliString.split("\\|"); //separo i giocatori
+    
+                            //ciclo i giocatori
+                            for(String playerToken : playerTokens){
+                                String[] playerParts = playerToken.split(":");
+                                int playerId = Integer.parseInt(playerParts[0]); //es: "0"
+                                String apertureData = playerParts[1]; //es: "0=8_diamonds.jpg,8_hearts.jpg;1=7_clubs.jpg"
+    
+                                Map<Integer, List<Carta>> apertureMap = new HashMap<>();
+    
+                                String[] apertureTokens = apertureData.split(";");
+    
+                                //ciclo le aperture dei giocatori
+                                for(String aperturaToken : apertureTokens){
+                                    String[] parts = aperturaToken.split("=");
+                                    int aperturaIndex = Integer.parseInt(parts[0]); //es: "0"
+                                    String[] carteStr = parts[1].split(","); //es: "8_diamonds.jpg" "8_hearts.jpg"
+    
+                                    List<Carta> carte = new ArrayList<>();
+                                    for(String cStr : carteStr){
+                                        Carta c = cartaFromFileName(cStr);
+                                        if(c != null) carte.add(c);
+                                    }
+                                    apertureMap.put(aperturaIndex, carte);
+                                }
+    
+                                jokerTotaliSulTavolo.put(playerId, apertureMap);
+    
+                                javafx.application.Platform.runLater(() -> {
+                                    aggiornaTavoloGUI();
+                                });
+                            }
                         }
                     } else if (line.equals("ERRORE_APERTURA_NON_VALIDA")) { //il server riscontra un problema sull'apertura
                         javafx.application.Platform.runLater(() -> {
@@ -2184,6 +2194,85 @@ public class GameClient extends Application {
             }
 
             return Optional.of(carteSostituite);
+        }
+
+        //se il popup viene chiuso con Annulla o la X, restituisco un Optional vuoto
+        return Optional.empty();
+    }
+
+    /*
+    popup per l'attacco di un joker a un tris e riceve come parametro:
+        - i sostituti dei joker se l'apertura è composta da soli joker
+        - l'apertura se c'è almeno una carta non joker all'interno
+    */
+    private Optional<Carta> showSemePopupAttacco(List<Carta> apertura) {
+        Dialog<ButtonType> dialog = new Dialog<>();
+        dialog.setTitle("Attacco Joker nel Tris");
+        dialog.setHeaderText("Scegli il seme del Joker che sta sostituendo");
+
+        VBox content = new VBox(10);
+        content.setAlignment(Pos.CENTER);
+
+        //trova il valore noto dalla prima carta non-joker
+        final String valoreTris;
+        String tempValore = null;
+        for (Carta c : apertura) {
+            if (!c.isJoker()) {
+                tempValore = c.getValore();
+                break;
+            }
+        }
+
+        if (tempValore == null) {
+            //nessun valore noto, impossibile attaccare
+            out.println("DEBUG: ERRORE NELL'ATTACCO");
+            return Optional.empty();
+        }
+        valoreTris = tempValore;
+
+        Label infoLabel = new Label("Il valore della carta che stai attaccando è: " + valoreTris + ". Scegli un seme");
+        content.getChildren().add(infoLabel);
+
+        //creo un ChoiceBox per il seme del joker
+        ChoiceBox<String> semeChoiceBox = new ChoiceBox<>();
+        semeChoiceBox.getItems().addAll("CUORI", "QUADRI", "FIORI", "PICCHE");
+        semeChoiceBox.getSelectionModel().selectFirst();
+        content.getChildren().add(semeChoiceBox);
+
+        dialog.getDialogPane().setContent(content);
+
+        //aggiungo un pulsante "Conferma" al popup
+        ButtonType confermaButtonType = new ButtonType("CONFERMA", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(confermaButtonType, ButtonType.CANCEL);
+        final Button confermaButton = (Button) dialog.getDialogPane().lookupButton(confermaButtonType);
+        Label erroreLabel = new Label("");
+        erroreLabel.setStyle("-fx-text-fill: red;");
+        content.getChildren().add(erroreLabel);
+
+        //Creo una lista di ChoiceBox con un solo elemento
+        List<ChoiceBox<String>> semeChoiceBoxesList = new ArrayList<>();
+        semeChoiceBoxesList.add(semeChoiceBox);
+
+        //listener per la validazione
+        Runnable validator = () -> {
+            //controllo se il seme scelto è valido
+            boolean isValid = validaSceltaJoker(valoreTris, semeChoiceBoxesList, apertura);
+            confermaButton.setDisable(!isValid);
+            if (!isValid) {
+                erroreLabel.setText("La carta selezionata esiste già due volte negli scarti o nel tris corrente");
+            } else {
+                erroreLabel.setText("");
+            }
+        };
+
+        semeChoiceBox.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> validator.run());
+        validator.run();
+
+        Optional<ButtonType> result = dialog.showAndWait();
+
+        if (result.isPresent() && result.get() == confermaButtonType) {
+            String semeScelto = semeChoiceBox.getValue();
+            return Optional.of(new Carta(valoreTris, semeScelto));
         }
 
         //se il popup viene chiuso con Annulla o la X, restituisco un Optional vuoto
@@ -4029,216 +4118,474 @@ public class GameClient extends Application {
 
     //per verificare se un attacco va a buon fine o meno
     private boolean verificaAttacco(Carta cartaManoSelezionata, SelezioneTavolo elementoTavoloSelezionato){
+
+        if (mano.getCarte().size() == 1){
+            feedbackLabel.setText("Scambio non permesso. Non si può finire le carte attaccando");
+            return false;
+        }
         
         List<Carta> apertura = elementoTavoloSelezionato.getAperturaAssociata();
         int idGiocatore = elementoTavoloSelezionato.getIdGiocatore();
 
-        // --- SCALA ---
-        if(isScala(apertura)){ //l'apertura a cui appartiene il placeholder/joker cliccato è una SCALA
+        // --- SCAMBIO CARTA/JOKER ---
+        if (elementoTavoloSelezionato.getCartaCliccata() != null && elementoTavoloSelezionato.getCartaCliccata().isJoker()) {
+            System.out.println("DEBUG: SWAP");
+            Carta jokerTavolo = elementoTavoloSelezionato.getCartaCliccata();
 
-            // --- SOSTITUIZIONE DI UN JOKER IN UNA SCALA ---
-            if(elementoTavoloSelezionato.getCartaCliccata() != null && elementoTavoloSelezionato.getCartaCliccata().isJoker()){
-                JokerSulTavolo joker = trovaJokerSulTavolo(idGiocatore, elementoTavoloSelezionato.getCartaCliccata());
-                Carta cartaJoker = joker.getJokerAssociato();
-                String valJoker = joker.getValoreSostituto();
-                String semJoker = joker.getSemeSostituo();
+            //recupero la mappa sostituzione di un giocatore
+            Map<Integer, List<Carta>> apertureJokerGiocatore = jokerTotaliSulTavolo.get(idGiocatore);
 
-                if(valJoker.equals(cartaManoSelezionata.getValore()) && semJoker.equals(cartaManoSelezionata.getSeme())){
-                    swapCartaJoker(cartaManoSelezionata, apertura, cartaJoker); //scambio la carta in mano col joker sul tavolo
-                    feedbackLabel.setText("Scambio carta-joker avvenuto con successo");
-                    return true;
-                } else {
-                    feedbackLabel.setText("Carta non corrispondente al Joker cliccato. Prova con un'altra carta");
-                    return false;
-                }
+            if (apertureJokerGiocatore != null) {
+                //trovo l'indice dell'apertura corrente
+                int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatore), apertura);
 
-            // --- ATTACCO SU UN PLACEHOLDER IN UNA SCALA ---
-            } else {
-                String posPlaceHolder = elementoTavoloSelezionato.getPosizioneAttacco();
-                Carta primaCartaNonJoker = null;
-                int posPrimaCartaNonJoker = 0;
+                if (aperturaIndex != -1) {
+                    //recupero la lista delle carte sostituite per quell'apertura
+                    List<Carta> sostituti = apertureJokerGiocatore.get(aperturaIndex);
 
-                //PLACEHOLDER all'inizio della scala
-                if(posPlaceHolder.equals("sx")){
+                    if (sostituti != null  && !sostituti.isEmpty()) {
 
-                    //caso particolare in cui la scala è composta da soli 4 joker
-                    if(contaJoker(apertura) == 4 && apertura.size() == 4){
-                        //TODO accertarsi che quando inserisco più di un joker in una scala, vengano aggiunti in ordine di valore virtuale
-                        if(convertiValoreNumerico(apertura.get(0).getValore()) == convertiValoreNumerico(cartaManoSelezionata.getValore())+1
-                            && apertura.get(0).getSeme().equals(cartaManoSelezionata.getSeme())){
-
-                                attaccaCartaTavolo(cartaManoSelezionata, apertura, posPlaceHolder);
-                                feedbackLabel.setText("Carta attaccata con successo");
-                                return true;
+                        if (sostituti.contains(cartaManoSelezionata)) {
+                            //la carta selezionata in mano è un sostituto valido
+                            swapCartaJoker(cartaManoSelezionata, jokerTavolo, apertura, idGiocatore);
+                            feedbackLabel.setText("Scambio avvenuto con successo");
+                            return true;
                         } else {
-                            feedbackLabel.setText("Carta non compatibile con il PlaceHolder cliccato. Prova con un'altra carta");
-                            return false;
-                        }
-
-                    //da 0 a 3 joker nella scala
-                    } else {
-                        //cerco la prima carta non joker
-                        for(Carta c : apertura){
-                            posPrimaCartaNonJoker++; //se la trovo al primo ciclo l'indice va a uno
-                            if(!c.isJoker()){
-                                primaCartaNonJoker = c;
-                                break;
-                            }
-                        }
-                        if(primaCartaNonJoker!=null){ //una carta teoricamente in questo punto la trovo al 100%
-
-                            //controllo se valore uguale a quello della prima carta non joker - la sua poszione e se i semi sono uguali
-                            if((convertiValoreNumerico(cartaManoSelezionata.getValore()) == (convertiValoreNumerico(primaCartaNonJoker.getValore()) - posPrimaCartaNonJoker))
-                                && (cartaManoSelezionata.getSeme().equals(primaCartaNonJoker.getSeme()))){
-
-                                attaccaCartaTavolo(cartaManoSelezionata, apertura, posPlaceHolder);
-                                feedbackLabel.setText("Carta attaccata con successo");
-                                return true;
-                            } else {
-                                feedbackLabel.setText("Carta non compatibile con il PlaceHolder cliccato. Prova con un'altra carta");
-                                return false;
-                            }
-
-                        } else {
-                            feedbackLabel.setText("Errore");
-                            return false;
-                        }
-                    }
-
-                //PLACEHOLDER alla fine della scala
-                } else { //pos == "dx"
-
-                    //caso particolare in cui la scala è composta da soli 4 joker
-                    if(contaJoker(apertura) == 4 && apertura.size() == 4){
-                        //TODO accertarsi che quando inserisco più di un joker in una scala, vengano aggiunti in ordine di valore virtuale
-                        if(convertiValoreNumerico(apertura.get(3).getValore()) == convertiValoreNumerico(cartaManoSelezionata.getValore())-1
-                            && apertura.get(0).getSeme().equals(cartaManoSelezionata.getSeme())){
-
-                                attaccaCartaTavolo(cartaManoSelezionata, apertura, posPlaceHolder);
-                                feedbackLabel.setText("Carta attaccata con successo");
-                                return true;
-                        } else {
-                            feedbackLabel.setText("Carta non compatibile con il PlaceHolder cliccato. Prova con un'altra carta");
-                            return false;
-                        }
-
-                    //da 0 a 3 joker nella scala
-                    } else {
-                        //cerco la prima carta non joker
-                        for(int i = apertura.size()-1; i >= 0; i--){
-                            posPrimaCartaNonJoker++; //se la trovo al primo ciclo l'indice va a uno
-                            Carta c = apertura.get(i);
-                            if(!c.isJoker()){
-                                primaCartaNonJoker = c;
-                                break;
-                            }
-                        }
-                        if(primaCartaNonJoker!=null){ //una carta teoricamente in questo punto la trovo al 100%
-
-                            //controllo se valore uguale a quello della prima carta non joker + la sua poszione e se i semi sono uguali
-                            if((convertiValoreNumerico(cartaManoSelezionata.getValore()) == (convertiValoreNumerico(primaCartaNonJoker.getValore()) + posPrimaCartaNonJoker))
-                                && (cartaManoSelezionata.getSeme().equals(primaCartaNonJoker.getSeme()))){
-
-                                attaccaCartaTavolo(cartaManoSelezionata, apertura, posPlaceHolder);
-                                feedbackLabel.setText("Carta attaccata con successo");
-                                return true;
-                            } else {
-                                feedbackLabel.setText("Carta non compatibile con il PlaceHolder cliccato. Prova con un'altra carta");
-                                return false;
-                            }
-
-                        } else {
-                            feedbackLabel.setText("Errore");
+                            //la carta non corrisponde al sostituto preciso
+                            feedbackLabel.setText("Scambio non permesso. Prova con altre carte o fai un'altra azione");
                             return false;
                         }
                     }
                 }
             }
 
-        // --- TRIS ---
-        } else { //l'apertura a cui appartiene il placeholder/joker cliccato è un TRIS
-            if(elementoTavoloSelezionato.getCartaCliccata() != null && elementoTavoloSelezionato.getCartaCliccata().isJoker()){
-                //TODO capire come sostituire la carta in mano al joker, ora scambia a prescindere dal seme che ho salvato col popup
-            } else {
+            //se arrivo qui lo scambio non è valido
+            return false;
 
+        // --- ATTACCO SUL TAVOLO ---
+        } else {
+            System.out.println("DEBUG: ATTACCO SUL TAVOLO");
+
+            //attacco su SCALA
+            if (isScala(apertura)){
+                System.out.println("DEBUG: ATTACCO SU SCALA");
+                String posPlaceholder = elementoTavoloSelezionato.getPosizioneAttacco();
+                if (cartaManoSelezionata.isJoker()){ //un joker può sempre essere attaccato, ma bisogna assegnare i giusti valori al sostituto
+                    //ATTACCO JOKER
+                    System.out.println("DEBUG: ATTACCO JOKER SU SCALA");
+                    
+                    //se sto attaccando un joker significa che al massimo ci sono 3 joker nella scala e di conseguenza ci sarà almeno una carta nota, e quindi non serve un popup
+                    
+                    //prendo il seme della scala
+                    String semeScala = "";
+                    for(Carta c : apertura){
+                        if (!c.isJoker() ){
+                            semeScala = c.getSeme();
+                            break;
+                        }
+                    }
+
+                    //trovo prima (e magari anche unica) carta nota e la sua poszione nella scala per determinare il valore del joker
+                    Carta primaCartaNota = null;
+                    int posCartaNota = -1;
+                    for (int i=0; i<apertura.size(); i++) {
+                        if (!apertura.get(i).isJoker()) {
+                            if (primaCartaNota == null) {
+                                primaCartaNota = apertura.get(i);
+                                posCartaNota = i;
+                            }
+                        }
+                    }
+
+                    /*
+                    costruisco la carta sostituto del joker
+                    es: X_J-J-J-6-7_X  (la scala va dal primo J al 7)
+                        *se attacco il nuovo J a sx:
+                           - cerco il 6 (la prima carta nota, ce ne sarà sempre almeno una, e potenzialmente anche unica)
+                           - mi salvo la sua posizione nella scala
+                           - il valore del sostituto è valore_carta_nota - poszione_carta_nota - 1
+                        *se attacco il nuovo J a dx:
+                           - cerco il 6 (la prima carta nota, ce ne sarà sempre almeno una, e potenzialmente anche unica)
+                           - mi salvo la sua posizione nella scala
+                           - il valore del sostituto è valore_carta_nota + (size_apertura - 1 - pos_carta_nota) + 1
+                    */
+                    Optional<Carta> sostituto = null;
+                    int valoreCorrente = Integer.parseInt(primaCartaNota.getValore());
+                    String valoreSostitutoTestuale;
+
+                    if (posPlaceholder.equals("sx")) {
+                        int valoreSostituto = valoreCorrente - posCartaNota - 1;
+
+                        if (valoreSostituto == 1) {
+                            valoreSostitutoTestuale = "1";
+                        } else {
+                            valoreSostitutoTestuale = convertiValoreTestuale(valoreSostituto);
+                        }
+                        sostituto = Optional.of(new Carta(convertiValoreTestuale(valoreSostituto), semeScala));
+                    } else {
+                        int valoreSostituto = valoreCorrente + apertura.size() - posCartaNota;
+
+                        if (valoreSostituto == 14) {
+                            valoreSostitutoTestuale = "1";
+                        } else {
+                            valoreSostitutoTestuale = convertiValoreTestuale(valoreSostituto);
+                        }
+                        sostituto = Optional.of(new Carta(convertiValoreTestuale(valoreSostituto), semeScala));
+                    }
+                    
+                    //joker attaccato sempre concesso
+                    attaccaCartaTavolo(cartaManoSelezionata, sostituto, apertura, posPlaceholder, idGiocatore);
+                    feedbackLabel.setText("Attacco avvenuto con successo");
+                    return true;
+
+                } else {
+                    //ATTACCO CARTA NOTA
+                    System.out.println("DEBUG: ATTACCO CARTA NOTA SU SCALA");
+                    if (apertura.size() == contaJoker(apertura)){ //scala interamente composta da joker
+                        
+                        //recupero la mappa sostituzione di un giocatore
+                        Map<Integer, List<Carta>> apertureJokerGiocatore = jokerTotaliSulTavolo.get(idGiocatore);
+
+                        if (apertureJokerGiocatore != null) {
+                            //trovo l'indice dell'apertura corrente
+                            int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatore), apertura);
+
+                            if (aperturaIndex != -1) {
+                                //recupero la lista delle carte sostituite per quell'apertura
+                                List<Carta> sostituti = apertureJokerGiocatore.get(aperturaIndex);
+
+                                if (sostituti != null  && !sostituti.isEmpty()) {
+                                    //prendo il seme della scala
+                                    String semeScala = sostituti.get(0).getSeme();
+
+                                    //trovo prima e ultima carta dei sostituti per controllare il valore e il seme con quella che sto attaccando
+                                    Carta primoSostituto = sostituti.get(0);
+                                    Carta ultimoSostituto = sostituti.get(sostituti.size() - 1);
+
+                                    //controllo se l'attacco è compatibile
+                                    if (posPlaceholder.equals("sx")) {
+                                        //ATTACCO A SX
+                                        int valoreAttacco = Integer.parseInt(primoSostituto.getValore()) - 1;
+
+                                        //controllo per l'Asso (gestendo sia "A" che "1")
+                                        boolean isAssoMatch = cartaManoSelezionata.getValore().equals("A") || cartaManoSelezionata.getValore().equals("1");
+
+                                        if ((cartaManoSelezionata.getValore().equals(convertiValoreTestuale(valoreAttacco)) &&
+                                            cartaManoSelezionata.getSeme().equals(semeScala))
+                                            || (valoreAttacco == 1 && isAssoMatch && cartaManoSelezionata.getSeme().equals(semeScala))){
+                                                //match esatto: l'attacco è permesso
+                                                attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "sx", idGiocatore);
+                                                feedbackLabel.setText("Attacco avvenuto con successo");
+                                                return true;
+                                        } else {
+                                            //la carta non corrisponde al placeholder preciso
+                                            feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                                            return false;
+                                        }
+                                    } else if (posPlaceholder.equals("dx")){
+                                        //ATTACCO A DX
+                                        int valoreAttacco = Integer.parseInt(ultimoSostituto.getValore()) + 1;
+
+                                        //controllo per l'Asso (gestendo sia "A" che "1")
+                                        boolean isAssoMatch = cartaManoSelezionata.getValore().equals("A") || cartaManoSelezionata.getValore().equals("1");
+
+                                        if ((cartaManoSelezionata.getValore().equals(convertiValoreTestuale(valoreAttacco)) &&
+                                            cartaManoSelezionata.getSeme().equals(semeScala))
+                                            || (valoreAttacco == 14 && isAssoMatch && cartaManoSelezionata.getSeme().equals(semeScala))){
+                                                //match esatto: l'attacco è permesso
+                                                attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "dx", idGiocatore);
+                                                feedbackLabel.setText("Attacco avvenuto con successo");
+                                                System.out.println("DEBUG: ATTACCO CARTA NOTA A DX SU SCALA - " + valoreAttacco);
+                                                return true;
+                                        } else {
+                                            //la carta non corrisponde al placeholder preciso
+                                            feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        //prendo il seme della scala (ci sarà per forza una carta nota)
+                        String semeScala = "";
+                        for(Carta c : apertura){
+                            if (!c.isJoker() ){
+                                semeScala = c.getSeme();
+                                break;
+                            }
+                        }
+
+                        //trovo prima (e magari anche unica) carta nota e la sua poszione nella scala per determinare il valore del joker
+                        Carta primaCartaNota = null;
+                        int posCartaNota = -1;
+                        for (int i=0; i<apertura.size(); i++) {
+                            if (!apertura.get(i).isJoker()) {
+                                if (primaCartaNota == null) {
+                                    primaCartaNota = apertura.get(i);
+                                    posCartaNota = i;
+                                }
+                            }
+                        }
+
+                        //controllo se l'attacco è compatibile
+                        if (posPlaceholder.equals("sx")) {
+                            //ATTACCO A SX
+                            int valoreCorrente = Integer.parseInt(primaCartaNota.getValore());
+                            int valoreSostituto = valoreCorrente - posCartaNota - 1;
+
+                            //controllo per l'Asso (gestendo sia "A" che "1")
+                            boolean isAssoMatch = cartaManoSelezionata.getValore().equals("A") || cartaManoSelezionata.getValore().equals("1");
+
+                            if ((cartaManoSelezionata.getValore().equals(convertiValoreTestuale(valoreSostituto)) &&
+                                cartaManoSelezionata.getSeme().equals(semeScala)) 
+                                || (valoreSostituto == 1 && isAssoMatch && cartaManoSelezionata.getSeme().equals(semeScala))){
+                                    //match esatto: l'attacco è permesso
+                                    attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "sx", idGiocatore);
+                                    feedbackLabel.setText("Attacco avvenuto con successo");
+                                    return true;
+                            } else {
+                                //la carta non corrisponde al placeholder preciso
+                                feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                                return false;
+                            }
+                        } else if (posPlaceholder.equals("dx")){
+                            //ATTACCO A DX
+                            int valoreCorrente = Integer.parseInt(primaCartaNota.getValore());
+                            int valoreSostituto = valoreCorrente + apertura.size() - posCartaNota;
+                            
+                            //controllo per l'Asso (gestendo sia "A" che "1")
+                            boolean isAssoMatch = cartaManoSelezionata.getValore().equals("A") || cartaManoSelezionata.getValore().equals("1");
+
+                            if ((cartaManoSelezionata.getValore().equals(convertiValoreTestuale(valoreSostituto)) &&
+                                cartaManoSelezionata.getSeme().equals(semeScala)) 
+                                || (valoreSostituto == 14 && isAssoMatch && cartaManoSelezionata.getSeme().equals(semeScala))){
+                                    //match esatto: l'attacco è permesso
+                                    attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "dx", idGiocatore);
+                                    feedbackLabel.setText("Attacco avvenuto con successo");
+                                    return true;
+                            } else {
+                                //la carta non corrisponde al placeholder preciso
+                                feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                                return false;
+                            }
+                        }
+                    }
+                }
+
+            //attacco su TRIS
+            } else {
+                System.out.println("DEBUG: ATTACCO SU TRIS");
+                //JOKER -> un joker può sempre essere attaccato, ma bisogna assegnare i giusti valori al sostituto
+                if (cartaManoSelezionata.isJoker()){ 
+
+                    //TRIS composto da soli Joker
+                    if (apertura.size() == contaJoker(apertura)) {
+                        //l'attacco è permesso, ma devo scegliere il seme del Joker e prendere il valore di uno degli altri Joker (tutti uguali ovviamente essendo un tris)
+                        
+                        //recupero la mappa sostituzione di un giocatore
+                        Map<Integer, List<Carta>> apertureJokerGiocatore = jokerTotaliSulTavolo.get(idGiocatore);
+                        int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatore), apertura);
+
+                        //recupero i joker sostituti
+                        List<Carta> carteSostituite = apertureJokerGiocatore.get(aperturaIndex);
+
+                        //apro il popup
+                        Optional<Carta> cartaSostituitaOptional = showSemePopupAttacco(carteSostituite);
+
+                        if (cartaSostituitaOptional.isPresent()) {
+                            //scelta del seme effettuata
+                            attaccaCartaTavolo(cartaManoSelezionata, cartaSostituitaOptional, apertura, "dx", idGiocatore);
+                            feedbackLabel.setText("Attacco avvenuto con successo");
+                            return true;
+                        } else {
+                            feedbackLabel.setText("Attacco annullato");
+                            return false;
+                        }
+
+                    //TRIS composto da almeno una carta nota
+                    } else {
+                        //apro il popup
+                        Optional<Carta> cartaSostituitaOptional = showSemePopupAttacco(apertura);
+                        
+                        if (cartaSostituitaOptional.isPresent()) {
+                            //scelta del seme effettuata
+                            attaccaCartaTavolo(cartaManoSelezionata, cartaSostituitaOptional, apertura, "dx", idGiocatore);
+                            feedbackLabel.setText("Attacco avvenuto con successo");
+                            return true;
+                        } else {
+                            feedbackLabel.setText("Attacco annullato");
+                            return false;
+                        }
+                    }
+
+                //CARTA NOTA
+                } else {
+                    //TRIS composto da soli Joker
+                    if (apertura.size() == contaJoker(apertura)) {
+                        //recupero la mappa sostituzione di un giocatore
+                        Map<Integer, List<Carta>> apertureJokerGiocatore = jokerTotaliSulTavolo.get(idGiocatore);
+                        int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatore), apertura);
+
+                        //recupero i joker sostituti
+                        List<Carta> carteSostituite = apertureJokerGiocatore.get(aperturaIndex);
+
+                        if (cartaManoSelezionata.getValore().equals(carteSostituite.get(0).getValore())) {
+                            //match esatto: lo scambio è permesso
+                            attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "dx", idGiocatore);
+                            feedbackLabel.setText("Attacco avvenuto con successo");
+                            return true;
+                        } else {
+                            //la carta non corrisponde al placeholder preciso
+                            feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                            return false;
+                        }
+    
+                    //TRIS composto da almeno una carta nota
+                    } else {
+                        //trovo il primo valore noto e controllo che la carta che sto attaccando abbia lo stesso valore
+                        String valoreNoto = null;
+                        for(Carta c : apertura){
+                            if (!c.isJoker()) {
+                                valoreNoto = c.getValore();
+                            }
+                        }
+
+                        if (valoreNoto.equals(cartaManoSelezionata.getValore())) {
+                            //match esatto: lo scambio è permesso
+                            attaccaCartaTavolo(cartaManoSelezionata, Optional.empty(), apertura, "dx", idGiocatore);
+                            feedbackLabel.setText("Attacco avvenuto con successo");
+                            return true;
+                        } else {
+                            //la carta non corrisponde al placeholder preciso
+                            feedbackLabel.setText("Attacco non permesso. Prova con altre carte o fai un'altra azione");
+                            return false;
+                        }
+                    }
+                }
             }
         }
 
         return true;
     }
 
-    //per trovare rapidamente un Joker sul tavolo al momento della sostituzione con una carta in mano
-    private JokerSulTavolo trovaJokerSulTavolo(int idGiocatore, Carta cartaJoker){
-        for (JokerSulTavolo joker : jokerSulTavolo) {
-            if (joker.getJokerAssociato().equals(cartaJoker) && joker.getIdGiocatore() == idGiocatore) {
-                return joker; //questo oggetto contiene la Carta joker, il seme e il valore che sta sostituendo, l'apertura a cui appartiene e il giocatore che l'ha messo sul tavolo
-            }
-        }
-        return null;
-    }
-
     //per scambiare una carta in mano con un joker sul tavolo
-    private void swapCartaJoker(Carta cartaMano, List<Carta> apertura, Carta jokerTavolo){
-        //TODO 
-        //1. rimuovere la carta dalla mano
-        for(Carta c : mano.getCarte()){
-            if(c.equals(cartaMano)){
-                mano.rimuoviCarta(cartaMano);
+    private void swapCartaJoker(Carta cartaMano, Carta jokerTavolo, List<Carta> apertura, int idGiocatoreApertura){
+        
+        //1. scambio la carta in mano col joker
+        int posCartaMano = -1;
+        for (int i = 0; i < mano.getCarte().size(); i++) {
+            if (mano.getCarte().get(i).equals(cartaMano)) {
+                posCartaMano = i;
                 break;
             }
         }
+        mano.getCarte().set(posCartaMano, jokerTavolo);
 
-        //2. rimuovere joker dall'apertura sul tavolo e salvarsi in che posizione era
-        //TODO cercare il joker corrispondente nell'apertura
+        //2. rimuovo joker dall'apertura sul tavolo e salvo in che posizione era
+        int posJoker = -1;
+        for (int i = 0; i < apertura.size(); i++) {
+            if (apertura.get(i).equals(jokerTavolo)) {
+                posJoker = i;
+                apertura.remove(i);
+                break;
+            }
+        }
+            if (posJoker == -1) {
+            System.err.println("ERRORE: Joker non trovato nell'apertura!");
+            return;
+        }
 
-        //3. rimuovere joker dalla lista di joker sul tavolo
-        //TODO
+        //3. rimuovo joker dalla lista di joker sul tavolo (jokerTotaliSulTavolo)
+        int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatoreApertura), apertura);
+        Map<Integer, List<Carta>> apertureJoker = jokerTotaliSulTavolo.get(idGiocatoreApertura);
+        if (apertureJoker != null) {
+            apertureJoker.remove(aperturaIndex);
+        }
 
-        //4. aggiungere joker alla mano
-        mano.aggiungiCarta(jokerTavolo);
+        //4. aggiungo la carta all'apertura nella posizione in cui era il joker
+        apertura.add(posJoker, cartaMano);
 
-        //5. aggiungere la carta all'apertura nella posizione in cui era il joker
-        //TODO
+        //5. comunico al server i cambiamenti in mano e sul tavolo
+        //es: SWAP_CARTE:joker.jpg,carta.jpg,idGiocatoreApertura,aperturaIndex,posizioneJokerNell'Apertura
+        String messaggio = "SWAP_CARTE:" + jokerTavolo.getImageFilename() + "," + cartaMano.getImageFilename() 
+                        + "," + idGiocatoreApertura + "," + aperturaIndex + "," + posJoker;
+        out.println(messaggio);
 
-        //6. comunicare al server i cambiamenti in mano e sul tavolo
-        //TODO
-
-        //7. server aggiorna il nuovo tavolo e le nuove carte in mano a tutti
-        //TODO
+        //6. aggiorno mano
+        aggiornaManoGUI();
     }
 
     //per attaccare una carta in mano a un'apertura sul tavolo
-    private void attaccaCartaTavolo(Carta cartaMano, List<Carta> apertura, String posPlaceHolder){
-        //1. rimuovere la carta dalla mano
-        for(Carta c : mano.getCarte()){
-            if(c.equals(cartaMano)){
-                mano.rimuoviCarta(cartaMano);
-                break;
-            }
-        }
+    private void attaccaCartaTavolo(Carta cartaMano, Optional<Carta> jokerSostituto, List<Carta> apertura, String posPlaceHolder, int idGiocatoreApertura){
+        
+        //1. rimuovo la carta dalla mano
+        mano.rimuoviCarta(cartaMano);
 
-        //2. comunicare la rimozione al server
-        //TODO
-
-        //3. aggiungere la carta all'apertura
-        if(posPlaceHolder.equals("sx")){
+        //2. aggiungo la carta all'apertura a sx o a dx
+        if (posPlaceHolder.equals("sx")) {
             apertura.add(0, cartaMano); //aggiunta in testa e shifta tutti gli altri oggetti
-        }else{
+        } else {
             apertura.add(cartaMano); //aggiunta in coda
         }
 
-        //4. comunicare la modifica del tavolo al server
-        //TODO
+        //calcolo l'indice dell'apertura
+        int aperturaIndex = trovaIndiceApertura(tavoloGioco.get(idGiocatoreApertura), apertura);
 
-        //5. server comunica a tutti gli aggiornamenti effettuati
-        //TODO
+        //3. se attacco un joker aggiorno la lista di joker sul tavolo (jokerTotaliSulTavolo)
+        if (jokerSostituto.isPresent()){
+            //se la mappa per il giocatore non esiste la creo
+            Map<Integer, List<Carta>> apertureGiocatore = jokerTotaliSulTavolo.get(idGiocatoreApertura);
+            if (apertureGiocatore == null) {
+                apertureGiocatore = new HashMap<>();
+                jokerTotaliSulTavolo.put(idGiocatoreApertura, apertureGiocatore);
+            }
+            List<Carta> listaSostituti = apertureGiocatore.getOrDefault(aperturaIndex, new ArrayList<>());
+            //aggiungo il nuovo joker sostituto alla lista
+            listaSostituti.add(jokerSostituto.get());
+            //risostituisco la lista aggiornata nella mappa
+            apertureGiocatore.put(aperturaIndex, listaSostituti);
+        }
+
+        //4. comunico al server i cambiamenti in mano e sul tavolo
+        //es: ATTACCA_CARTA:cartaDaAttaccare.jpg,jokerSostituto.jpg,idGiocatoreApertura,aperturaIndex,posizioneAttacco (dx o sx)
+        String nomeFileJokerSostituto = jokerSostituto.isPresent() ? jokerSostituto.get().getImageFilename() : "";
+        String messaggio = "ATTACCA_CARTA:" + cartaMano.getImageFilename() + "," + nomeFileJokerSostituto 
+                        + "," + idGiocatoreApertura + "," + aperturaIndex + "," + posPlaceHolder;
+        out.println(messaggio);
+
+        //5. aggiorno mano
+        aggiornaManoGUI();
     }
 
     //per capire se un'apertura è un tris (return false) o una scala (return true)
-    // funziona se l'apertura non è composta da soli joker (unico caso è 4 joker e non sa riconoscere se è compongono una scala o un tris a cui è stato attaccato un altro joker)
+    //funziona se l'apertura NON è composta da soli joker (unico caso è 4 joker e non sa riconoscere se è compongono una scala o un tris a cui è stato attaccato un altro joker)
     private boolean isScala(List<Carta> apertura){
         if(apertura.size() == 3){
             return false; //certamente è un tris
+        }
+
+        //caso speciale: apertura di 4 carte, tutte Joker
+        if(apertura.size() == 4 && contaJoker(apertura) == 4){
+            //prendo la mappa delle aperture con i joker sul tavolo (appartengono tutti alla stessa apertura in questo caso speciale)
+            for (Map<Integer, List<Carta>> apertureGiocatore : jokerTotaliSulTavolo.values()) {
+                //cerco l'apertura corrente all'interno della mappa dei sostituti
+                for (List<Carta> sostituti : apertureGiocatore.values()) {
+                    if (sostituti.size() == 4) { //trovata l'unica apertura di 4 joker
+                        //controllo i valori dei sostituti
+                        String valoreDiRiferimento = sostituti.get(0).getValore();
+                        boolean tuttiStessoSeme = true;
+                        for (int i = 1; i < sostituti.size(); i++) {
+                            if (!sostituti.get(i).getValore().equals(valoreDiRiferimento)) {
+                                tuttiStessoSeme = false;
+                                break;
+                            }
+                        }
+                        //se i valori sono tutti uguali, è un tris (false), altrimenti è una scala (true)
+                        return !tuttiStessoSeme;
+                    }
+                }
+            }
         }
 
         //se l'apertura ha più di tre carte può essere un tris (necessariamente con una o più carte attaccate) oppure una scala (standard o con carte attaccate)
@@ -4255,7 +4602,7 @@ public class GameClient extends Application {
             }
         }
     
-        //supero tutti i controlli allora è un tris (tutte le carte non joker hanno lo stesso valore)
+        //se supero tutti i controlli allora è un tris (tutte le carte non joker hanno lo stesso valore)
         return false;
     }
 
@@ -4308,11 +4655,11 @@ public class GameClient extends Application {
 /*
 TODO
     LATO CLIENT
-    1) fase di ATTACCO
+    1) quando carico l'immagine del seme/valore sul joker, fare il caso di un tris con solo joker (quindi nel primo mostrare anche il valore oltre al seme) e di una scala con solo joker (quindi nel primo mostrare anche il seme oltre il valore)
+    2) un joker può essere scartato come carta finale, e quindi può rimanere in mano come ultima carta dopo un'apertura
 
     LATO SERVER
-    1) fase di ATTACCO 
-    2) fare fine gioco
+    1) fare fine gioco alla fine del round 8
+    2) fare classifica finale con punteggio (in caso di parità vince chi ha vinto più turni)
     3) fare regolamento con pulsante sempre cliccabile
-    4) fare fine gioco alla fine del round 8
 */ 
